@@ -1,6 +1,7 @@
 import net from "net";
 import { parseAllCommands } from "./parser.js";
 import type { RespValue } from "./parser.js";
+import * as store from "./store.js";
 
 const PORT = 6379;
 
@@ -11,6 +12,8 @@ function bulkString(s: string): string {
 function errorReply(msg: string): string {
   return `-ERR ${msg}\r\n`;
 }
+
+const NULL_BULK = "$-1\r\n";
 
 function getArgs(val: RespValue): string[] | null {
   if (val.type !== "array" || val.value === null) return null;
@@ -45,6 +48,20 @@ const server = net.createServer((socket) => {
           socket.write(errorReply("wrong number of arguments for 'echo' command"));
         } else {
           socket.write(bulkString(args[1]!));
+        }
+      } else if (cmd === "SET") {
+        if (args.length < 3) {
+          socket.write(errorReply("wrong number of arguments for 'set' command"));
+        } else {
+          store.set(args[1]!, args[2]!);
+          socket.write("+OK\r\n");
+        }
+      } else if (cmd === "GET") {
+        if (args.length < 2) {
+          socket.write(errorReply("wrong number of arguments for 'get' command"));
+        } else {
+          const value = store.get(args[1]!);
+          socket.write(value === null ? NULL_BULK : bulkString(value));
         }
       } else {
         socket.write(errorReply(`unknown command '${args[0]!}'`));
