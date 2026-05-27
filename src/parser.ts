@@ -1,35 +1,73 @@
-// Parses all RESP array commands from a raw socket string (handles pipelining).
-// Returns an array of command token arrays, e.g. [["PING"], ["SET", "k", "v"]].
-export function parseAllCommands(raw: string): string[][] {
-  const commands: string[][] = [];
-  const lines = raw.split("\r\n");
-  let i = 0;
+export type RespValue =
+  | { type: "simple"; value: string }
+  | { type: "error"; value: string }
+  | { type: "integer"; value: number }
+  | { type: "bulk"; value: string | null }
+  | { type: "array"; value: RespValue[] | null };
 
-  while (i < lines.length) {
-    const header = lines[i];
-    if (!header || !header.startsWith("*")) break;
+export type ParseResult = { value: RespValue; remaining: string } | null;
 
-    const count = parseInt(header.slice(1), 10);
-    if (isNaN(count)) break;
-    i++;
+export function parseRespValue(raw: string): ParseResult {
+  if (!raw.length) return null;
 
-    const args: string[] = [];
-    let valid = true;
+  const crlf = raw.indexOf("\r\n");
+  if (crlf === -1) return null;
 
-    for (let n = 0; n < count; n++) {
-      const lenLine = lines[i];
-      if (lenLine === undefined || !lenLine.startsWith("$")) { valid = false; break; }
-      const len = parseInt(lenLine.slice(1), 10);
-      i++;
-      const value = lines[i];
-      if (value === undefined || value.length !== len) { valid = false; break; }
-      args.push(value);
-      i++;
+  const kind = raw[0];
+  const line = raw.slice(1, crlf);
+  const after = raw.slice(crlf + 2);
+
+  switch (kind) {
+    case "+":
+      return { value: { type: "simple", value: line }, remaining: after };
+
+    case "-":
+      return { value: { type: "error", value: line }, remaining: after };
+
+    case ":": {
+      const n = parseInt(line, 10);
+      if (isNaN(n)) return null;
+      return { value: { type: "integer", value: n }, remaining: after };
     }
 
-    if (!valid) break;
-    commands.push(args);
-  }
+    case "$": {
+      const len = parseInt(line, 10);
+      if (isNaN(len)) return null;
+      if (len === -1) return { value: { type: "bulk", value: null }, remaining: after };
+      if (after.length < len + 2) return null;
+      const data = after.slice(0, len);
+      if (after.slice(len, len + 2) !== "\r\n") return null;
+      return { value: { type: "bulk", value: data }, remaining: after.slice(len + 2) };
+    }
 
+    case "*": {
+      const count = parseInt(line, 10);
+      if (isNaN(count)) return null;
+      if (count === -1) return { value: { type: "array", value: null }, remaining: after };
+      const elements: RespValue[] = [];
+      let rest = after;
+      for (let i = 0; i < count; i++) {
+        const result = parseRespValue(rest);
+        if (!result) return null;
+        elements.push(result.value);
+        rest = result.remaining;
+      }
+      return { value: { type: "array", value: elements }, remaining: rest };
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function parseAllCommands(raw: string): RespValue[] {
+  const commands: RespValue[] = [];
+  let rest = raw;
+  while (rest.length) {
+    const result = parseRespValue(rest);
+    if (!result) break;
+    commands.push(result.value);
+    rest = result.remaining;
+  }
   return commands;
 }
